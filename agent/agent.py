@@ -6,10 +6,11 @@ from torch.distributions import Categorical
 # Agent no communication
 class Agents:
     def __init__(self, args):
-        self.n_actions = args.n_actions
-        self.n_agents = args.n_agents
-        self.state_shape = args.state_shape
-        self.obs_shape = args.obs_shape
+        self.n_actions = args.n_actions # 动作空间的大小
+        self.n_agents = args.n_agents # 智能体的数量
+        self.state_shape = args.state_shape # 全局状态的维度 todo
+        self.obs_shape = args.obs_shape # 每个智能体的观测维度 todo
+        # todo 其他未看过的算法后续继续观看
         if args.alg == 'vdn':
             from policy.vdn import VDN
             self.policy = VDN(args)
@@ -42,18 +43,29 @@ class Agents:
         self.args = args
 
     def choose_action(self, obs, last_action, agent_num, avail_actions, epsilon, maven_z=None):
+        '''
+        obs: 当前的agent的观察
+        last_action: 上一次选择的动作
+        agent_num: agent的编号
+        avail_actions: 可以使用的动作列表
+        epsilon： 当前的epsilon的值
+        maven_z：todo 作用未明
+        '''
         inputs = obs.copy()
         avail_actions_ind = np.nonzero(avail_actions)[0]  # index of actions which can be choose
 
         # transform agent_num to onehot vector
         agent_id = np.zeros(self.n_agents)
-        agent_id[agent_num] = 1.
+        agent_id[agent_num] = 1. # 这里是构建了一个one-hot的编码，代表是哪一个agent
 
         if self.args.last_action:
+            # 这个参数代表是否将上一次执行的动作和当前的观察合并在一起
             inputs = np.hstack((inputs, last_action))
         if self.args.reuse_network:
+            # 将agent_id融入到输入中，目前输入已经合并了观察-上一次的动作-agentid
+            # 如果采用了循环神经网络大概率要这个，毕竟是有历史记忆
             inputs = np.hstack((inputs, agent_id))
-        hidden_state = self.policy.eval_hidden[:, agent_num, :]
+        hidden_state = self.policy.eval_hidden[:, agent_num, :] # 提取对应隐藏层的状态，主要针对循环神经网络
 
         # transform the shape of inputs from (42,) to (1,42)
         inputs = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0)
@@ -64,18 +76,25 @@ class Agents:
 
         # get q value
         if self.args.alg == 'maven':
+            # todo 后面再看
             maven_z = torch.tensor(maven_z, dtype=torch.float32).unsqueeze(0)
             if self.args.cuda:
                 maven_z = maven_z.cuda()
             q_value, self.policy.eval_hidden[:, agent_num, :] = self.policy.eval_rnn(inputs, hidden_state, maven_z)
         else:
+            # 将输入和隐藏层的状态输入后到RNN中，然后获取动作Q值的分布以及最新的隐藏层状态，存储到eval_hidden中
             q_value, self.policy.eval_hidden[:, agent_num, :] = self.policy.eval_rnn(inputs, hidden_state)
 
         # choose action from q value
         if self.args.alg == 'coma' or self.args.alg == 'central_v' or self.args.alg == 'reinforce':
+            # todo 后面再说
             action = self._choose_action_from_softmax(q_value.cpu(), avail_actions, epsilon)
         else:
+            # avail_actions：这里可以看出可用的动作列表是一个tensor，有点像[1,1,1,0,0,1]这种形式，1的地方表示有动作、0表示没有动作
+            # 将无意义的动作的Q值设置为最小
             q_value[avail_actions == 0.0] = - float("inf")
+            # 随机采集动作或者采集最大Q值的动作
+            # 从这里可以看出对于Q值的预测依旧还是让神经网络预测一个动作Q值的分布
             if np.random.uniform() < epsilon:
                 action = np.random.choice(avail_actions_ind)  # action是一个整数
             else:

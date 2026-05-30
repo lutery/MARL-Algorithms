@@ -12,7 +12,7 @@ class QMixNet(nn.Module):
 
         # args.n_agents是使用hyper_w1作为参数的网络的输入维度，args.qmix_hidden_dim是网络隐藏层参数个数
         # 从而经过hyper_w1得到(经验条数，args.n_agents * args.qmix_hidden_dim)的矩阵
-        if args.two_hyper_layers:
+        if args.two_hyper_layers: # 这个仅仅只是决定是否使用双层全链接网络来提取特征
             self.hyper_w1 = nn.Sequential(nn.Linear(args.state_shape, args.hyper_hidden_dim),
                                           nn.ReLU(),
                                           nn.Linear(args.hyper_hidden_dim, args.n_agents * args.qmix_hidden_dim))
@@ -32,6 +32,8 @@ class QMixNet(nn.Module):
                                      nn.ReLU(),
                                      nn.Linear(args.qmix_hidden_dim, 1)
                                      )
+        
+        # todo 以上网络是怎么使用的？
 
     def forward(self, q_values, states):  # states的shape为(episode_num, max_episode_len， state_shape)
         # 传入的q_values是三维的，shape为(episode_num, max_episode_len， n_agents)

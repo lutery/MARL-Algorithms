@@ -6,18 +6,18 @@ from network.qmix_net import QMixNet
 
 class QMIX:
     def __init__(self, args):
-        self.n_actions = args.n_actions
-        self.n_agents = args.n_agents
-        self.state_shape = args.state_shape
-        self.obs_shape = args.obs_shape
+        self.n_actions = args.n_actions # 动作空间的大小
+        self.n_agents = args.n_agents # 智能体的数量
+        self.state_shape = args.state_shape # 全局状态的维度 todo
+        self.obs_shape = args.obs_shape # 每个智能体的观测维度 todo
         input_shape = self.obs_shape
         # 根据参数决定RNN的输入维度
         if args.last_action:
-            input_shape += self.n_actions
+            input_shape += self.n_actions # todo 这个是在干嘛？
         if args.reuse_network:
-            input_shape += self.n_agents
+            input_shape += self.n_agents # todo 这个也是在干嘛？
 
-        # 神经网络
+        # 神经网络 以下4个网络的各自作用
         self.eval_rnn = RNN(input_shape, args)  # 每个agent选动作的网络
         self.target_rnn = RNN(input_shape, args)
         self.eval_qmix_net = QMixNet(args)  # 把agentsQ值加起来的网络
@@ -48,9 +48,12 @@ class QMIX:
         self.eval_parameters = list(self.eval_qmix_net.parameters()) + list(self.eval_rnn.parameters())
         if args.optimizer == "RMS":
             self.optimizer = torch.optim.RMSprop(self.eval_parameters, lr=args.lr)
+        else: 
+            self.optimizer = torch.optim.Adam(self.eval_parameters, lr=args.lr)
 
         # 执行过程中，要为每个agent都维护一个eval_hidden
         # 学习过程中，要为每个episode的每个agent都维护一个eval_hidden、target_hidden
+        # todo 这里的作用
         self.eval_hidden = None
         self.target_hidden = None
         print('Init alg QMIX')

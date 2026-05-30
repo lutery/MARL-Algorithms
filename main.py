@@ -30,10 +30,11 @@ if __name__ == '__main__':
         args.obs_shape = env_info["obs_shape"]
         args.episode_limit = env_info["episode_limit"]
         runner = Runner(env, args)
-        if not args.evaluate:
-            runner.run(i)
+        if not args.evaluate: # 这个参数用来控制是训练还是评估，训练的话就调用runner.run(i)，评估的话就调用runner.evaluate()，评估的时候不需要训练，所以不需要调用runner.run(i)
+            # evaluate 这个参数也是错的
+            runner.run(i) 
         else:
-            win_rate, _ = runner.evaluate()
+            win_rate, _ = runner.evaluate() # todo 后续再看
             print('The win rate of {} is  {}'.format(args.alg, win_rate))
             break
         env.close()

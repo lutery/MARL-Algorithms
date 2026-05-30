@@ -4,6 +4,7 @@ import torch.nn.functional as f
 
 class RNN(nn.Module):
     # Because all the agents share the same network, input_shape=obs_shape+n_actions+n_agents
+    # 预测的是动作的Q值分布
     def __init__(self, input_shape, args):
         super(RNN, self).__init__()
         self.args = args
