@@ -56,14 +56,16 @@ class Runner:
                 for key in episode_batch.keys():
                     episode_batch[key] = np.concatenate((episode_batch[key], episode[key]), axis=0)
             if self.args.alg.find('coma') > -1 or self.args.alg.find('central_v') > -1 or self.args.alg.find('reinforce') > -1:
+                # 这里是针对on-policy算法的训练，直接用采样到的数据进行训练，不需要经验回放池
+                # todo 后续再看
                 self.agents.train(episode_batch, train_steps, self.rolloutWorker.epsilon)
                 train_steps += 1
             else:
-                self.buffer.store_episode(episode_batch)
+                self.buffer.store_episode(episode_batch) # 将采样到的数据存储到经验回放池中
                 for train_step in range(self.args.train_steps):
-                    mini_batch = self.buffer.sample(min(self.buffer.current_size, self.args.batch_size))
+                    mini_batch = self.buffer.sample(min(self.buffer.current_size, self.args.batch_size)) # 从经验回放池中抽取一个mini_batch进行学习，抽取的数量是经验回放池中当前存储的经验数量和预设的batch_size中的较小值，防止抽取的数量超过当前存储的经验数量
                     self.agents.train(mini_batch, train_steps)
-                    train_steps += 1
+                    train_steps += 1 # 更新训练的步数
         win_rate, episode_reward = self.evaluate()
         print('win_rate is ', win_rate)
         self.win_rates.append(win_rate)

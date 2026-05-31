@@ -121,6 +121,7 @@ class Agents:
         return action
 
     def _get_max_episode_len(self, batch):
+        # 这里的作用是找到当前训练的batch中最长的episode的长度，因为每个episode的长度不一样，所以要找到最长的episode的长度，然后在训练的时候只用到这个长度的数据，避免填充的数据对训练的影响
         terminated = batch['terminated']
         episode_num = terminated.shape[0]
         max_episode_len = 0
@@ -137,13 +138,13 @@ class Agents:
     def train(self, batch, train_step, epsilon=None):  # coma needs epsilon for training
 
         # different episode has different length, so we need to get max length of the batch
-        max_episode_len = self._get_max_episode_len(batch)
+        max_episode_len = self._get_max_episode_len(batch) # 获取本次训练的batch中最长的episode的长度
         for key in batch.keys():
             if key != 'z':
-                batch[key] = batch[key][:, :max_episode_len]
+                batch[key] = batch[key][:, :max_episode_len] # 只用到最长的episode的长度的数据，避免填充的数据对训练的影响，看来是因为有循环神经网络的关系
         self.policy.learn(batch, max_episode_len, train_step, epsilon)
         if train_step > 0 and train_step % self.args.save_cycle == 0:
-            self.policy.save_model(train_step)
+            self.policy.save_model(train_step) # 每隔save_cycle步保存一次模型
 
 
 # Agent for communication

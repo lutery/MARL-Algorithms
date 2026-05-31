@@ -18,7 +18,7 @@ class QMIX:
             input_shape += self.n_agents # todo 这个也是在干嘛？
 
         # 神经网络 以下4个网络的各自作用
-        self.eval_rnn = RNN(input_shape, args)  # 每个agent选动作的网络
+        self.eval_rnn = RNN(input_shape, args)  # 每个agent选动作的网络，主要预测的是动作的Q值分布
         self.target_rnn = RNN(input_shape, args)
         self.eval_qmix_net = QMixNet(args)  # 把agentsQ值加起来的网络
         self.target_qmix_net = QMixNet(args)
@@ -64,14 +64,20 @@ class QMIX:
         3——第几个agent的数据 4——具体obs维度。因为在选动作时不仅需要输入当前的inputs，还要给神经网络输入hidden_state，
         hidden_state和之前的经验相关，因此就不能随机抽取经验进行学习。所以这里一次抽取多个episode，然后一次给神经网络
         传入每个episode的同一个位置的transition
+
+        batch: 从经验回放池中抽取的一个mini_batch，包含了多个episode的数据，每个episode的数据是一个四维的数组，四个维度分别为 1——第几个episode 2——episode中第几个transition 3——第几个agent的数据 4——具体obs维度
+        max_episode_len: 这个mini_batch中最长的episode的长度，因为每个episode的长度不一样，所以要找到最长的episode的长度，然后在训练的时候只用到这个长度的数据，避免填充的数据对训练的影响
+        train_step: 第几次学习，用来控制更新target_net网络的参数
+        epsilon: 选动作时的epsilon，coma在训练时也需要epsilon计算动作的执行概率
         '''
         episode_num = batch['o'].shape[0]
-        self.init_hidden(episode_num)
+        self.init_hidden(episode_num) # 开始训练时，由于是从头开始训练，所以初始化隐藏层的状态，基本都是全零
         for key in batch.keys():  # 把batch里的数据转化成tensor
-            if key == 'u':
+            if key == 'u': # 这边写的有点绕，u是动作的编号，是一个整数，所以转化成long类型，而其他的都是float类型
                 batch[key] = torch.tensor(batch[key], dtype=torch.long)
             else:
                 batch[key] = torch.tensor(batch[key], dtype=torch.float32)
+        # s:全局状态，s_next:下一个全局状态，u:动作编号，r:奖励，avail_u:当前可执行的动作，avail_u_next:下一个状态下可执行的动作，terminated:episode是否结束
         s, s_next, u, r, avail_u, avail_u_next, terminated = batch['s'], batch['s_next'], batch['u'], \
                                                              batch['r'],  batch['avail_u'], batch['avail_u_next'],\
                                                              batch['terminated']
@@ -87,6 +93,7 @@ class QMIX:
             terminated = terminated.cuda()
             mask = mask.cuda()
         # 取每个agent动作对应的Q值，并且把最后不需要的一维去掉，因为最后一维只有一个值了
+        # 根据实际执行的动作选择对应动作的Q值
         q_evals = torch.gather(q_evals, dim=3, index=u).squeeze(3)
 
         # 得到target_q
@@ -114,6 +121,7 @@ class QMIX:
 
     def _get_inputs(self, batch, transition_idx):
         # 取出所有episode上该transition_idx的经验，u_onehot要取出所有，因为要用到上一条
+        # 取出所有局游戏的该transition_idx的obs、obs_next、u_onehot，维度分别为(episode个数, n_agents, obs维度)、(episode个数, n_agents, obs维度)、(episode个数, n_agents, n_actions)
         obs, obs_next, u_onehot = batch['o'][:, transition_idx], \
                                   batch['o_next'][:, transition_idx], batch['u_onehot'][:]
         episode_num = obs.shape[0]
@@ -132,6 +140,7 @@ class QMIX:
             # 因为当前的obs三维的数据，每一维分别代表(episode编号，agent编号，obs维度)，直接在dim_1上添加对应的向量
             # 即可，比如给agent_0后面加(1, 0, 0, 0, 0)，表示5个agent中的0号。而agent_0的数据正好在第0行，那么需要加的
             # agent编号恰好就是一个单位矩阵，即对角线为1，其余为0
+            # 这里应该是利用一个对角线矩阵的方式，方便创建出每个agent对应的编号向量（one-hot），因为每个agent的数据在obs中的位置是固定的，所以直接在这个位置上加上对应的编号向量就可以了
             inputs.append(torch.eye(self.args.n_agents).unsqueeze(0).expand(episode_num, -1, -1))
             inputs_next.append(torch.eye(self.args.n_agents).unsqueeze(0).expand(episode_num, -1, -1))
         # 要把obs中的三个拼起来，并且要把episode_num个episode、self.args.n_agents个agent的数据拼成40条(40,96)的数据，
@@ -141,8 +150,12 @@ class QMIX:
         return inputs, inputs_next
 
     def get_q_values(self, batch, max_episode_len):
-        episode_num = batch['o'].shape[0]
-        q_evals, q_targets = [], []
+        '''
+        batch: 从经验回放池中抽取的一个mini_batch，包含了多个episode的数据，每个episode的数据是一个四维的数组，四个维度分别为 1——第几个episode 2——episode中第几个transition 3——第几个agent的数据 4——具体obs维度
+        max_episode_len: 这个mini_batch中最长的episode的长度，因为每个episode的长度不一样，所以要找到最长的episode的长度，然后在训练的时候只用到这个长度的数据，避免填充的数据对训练的影响
+        '''
+        episode_num = batch['o'].shape[0] # 有多少局游戏的数据
+        q_evals, q_targets = [], [] # 存储对于采样的batch，每一条经验得到的q_eval和q_target，最终要把它们转化成(episode个数, max_episode_len， n_agents， n_actions)的数组
         for transition_idx in range(max_episode_len):
             inputs, inputs_next = self._get_inputs(batch, transition_idx)  # 给obs加last_action、agent_id
             if self.args.cuda:
