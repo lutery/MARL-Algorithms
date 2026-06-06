@@ -96,14 +96,15 @@ class QMIX:
         # 根据实际执行的动作选择对应动作的Q值
         q_evals = torch.gather(q_evals, dim=3, index=u).squeeze(3)
 
-        # 得到target_q
+        # 得到target_q，这个是预测的每一个动作的Q值
+        # avail_u_next == 0.0 表示该动作在下一个状态下不可用，所以将这些不可用的动作的Q值设置为极大小值
         q_targets[avail_u_next == 0.0] = - 9999999
-        q_targets = q_targets.max(dim=3)[0]
+        q_targets = q_targets.max(dim=3)[0]  # 下一个状态的动作选择最大Q值的动作
 
         q_total_eval = self.eval_qmix_net(q_evals, s)
         q_total_target = self.target_qmix_net(q_targets, s_next)
 
-        targets = r + self.args.gamma * q_total_target * (1 - terminated)
+        targets = r + self.args.gamma * q_total_target * (1 - terminated) # 这里是预测每一步的Q值，从而计算每一个Q值的差值
 
         td_error = (q_total_eval - targets.detach())
         masked_td_error = mask * td_error  # 抹掉填充的经验的td_error

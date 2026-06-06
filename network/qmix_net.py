@@ -33,7 +33,7 @@ class QMixNet(nn.Module):
                                      nn.Linear(args.qmix_hidden_dim, 1)
                                      )
         
-        # todo 以上网络是怎么使用的？
+        # 以上网络是怎么使用的？ 看md文件
 
     def forward(self, q_values, states):  # states的shape为(episode_num, max_episode_len， state_shape)
         # 传入的q_values是三维的，shape为(episode_num, max_episode_len， n_agents)
