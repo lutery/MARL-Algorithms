@@ -42,7 +42,7 @@ class RolloutWorker:
         last_action = np.zeros((self.args.n_agents, self.args.n_actions))
         self.agents.policy.init_hidden(1) # 在训练前给agents初始化隐藏状态
 
-        # epsilon
+        # epsilon 苹果模式下 epsilon 为0，表示所有动作的预测全部都由模型做主
         epsilon = 0 if evaluate else self.epsilon
         if self.args.epsilon_anneal_scale == 'episode': # 更新epsilon
             epsilon = epsilon - self.anneal_epsilon if epsilon > self.min_epsilon else epsilon
@@ -61,9 +61,9 @@ class RolloutWorker:
             # time.sleep(0.2)
             obs = self.env.get_obs() # 获取每个agnet观察的列表
             state = self.env.get_state() # 获取全局的观察
-            # actions：存储选择动作的索引
-            # avail_actions：存储每次选择动作时的可用动作有哪些
-            # actions_onehot：存储选择动作索引对应的one-hot编码
+            # actions：存储每个智能体选择动作的索引
+            # avail_actions：存储每个智能体每次选择动作时的可用动作有哪些
+            # actions_onehot：存储每个智能体选择动作索引对应的one-hot编码
             actions, avail_actions, actions_onehot = [], [], []
             # 遍历每一个agent
             for agent_id in range(self.n_agents):
@@ -118,7 +118,8 @@ class RolloutWorker:
 
         # if step < self.episode_limit，padding 
         # 如果数据采样没有达到指定的长度，则进行填充0
-        # todo 为啥
+        # 这里主要是因为适用到了RNN网络，要统一所有训练数据的长度，所以直接进入填充
+        # 后续再训练时会用mask进行掩盖即可
         for i in range(step, self.episode_limit):
             o.append(np.zeros((self.n_agents, self.obs_shape)))
             u.append(np.zeros([self.n_agents, 1]))

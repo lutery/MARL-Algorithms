@@ -68,13 +68,12 @@ class QtranQBase(nn.Module):
     def __init__(self, args):
         super(QtranQBase, self).__init__()
         self.args = args
-        # action_encoding对输入的每个agent的hidden_state和动作进行编码，从而将所有agents的hidden_state和动作相加得到近似的联合hidden_state和动作
+        # 这里接收的输入是RNN特征提取后的
         ae_input = self.args.rnn_hidden_dim + self.args.n_actions
         self.hidden_action_encoding = nn.Sequential(nn.Linear(ae_input, ae_input),
                                              nn.ReLU(),
                                              nn.Linear(ae_input, ae_input))
 
-        # 编码求和之后输入state、所有agent的hidden_state和动作之和
         q_input = self.args.state_shape + self.args.n_actions + self.args.rnn_hidden_dim
         self.q = nn.Sequential(nn.Linear(q_input, self.args.qtran_hidden_dim),
                                nn.ReLU(),
@@ -82,12 +81,17 @@ class QtranQBase(nn.Module):
                                nn.ReLU(),
                                nn.Linear(self.args.qtran_hidden_dim, 1))
 
-    # 因为所有时刻所有agent的hidden_states在之前已经计算好了，所以联合Q值可以一次计算所有transition的，不需要一条一条计算。
     def forward(self, state, hidden_states, actions):  # (episode_num, max_episode_len, n_agents, n_actions)
+        '''
+        state: 全局的obs观察
+        hidden_states: 循环神经网络每一步的状态
+        actions: 采集动作时的one-hot编码
+        '''
+        # todo 这里每一个输入的是啥？
         episode_num, max_episode_len, n_agents, _ = actions.shape
-        hidden_actions = torch.cat([hidden_states, actions], dim=-1)
+        hidden_actions = torch.cat([hidden_states, actions], dim=-1) # 将隐藏状态和动作合并，RNN的隐藏状态输入的是状态、动作、agent id
         hidden_actions = hidden_actions.reshape(-1, self.args.rnn_hidden_dim + self.args.n_actions)
-        hidden_actions_encoding = self.hidden_action_encoding(hidden_actions)
+        hidden_actions_encoding = self.hidden_action_encoding(hidden_actions) # 对隐藏状态+动作的特征进一步提取特征
         hidden_actions_encoding = hidden_actions_encoding.reshape(episode_num * max_episode_len, n_agents, -1)  # 变回n_agents维度用于求和
         hidden_actions_encoding = hidden_actions_encoding.sum(dim=-2)
 
@@ -96,19 +100,16 @@ class QtranQBase(nn.Module):
         return q
 
 
-# 输入当前的state与所有agent的hidden_state, 输出V值
 class QtranV(nn.Module):
     def __init__(self, args):
         super(QtranV, self).__init__()
         self.args = args
 
-        # hidden_encoding对输入的每个agent的hidden_state编码，从而将所有agents的hidden_state相加得到近似的联合hidden_state
         hidden_input = self.args.rnn_hidden_dim
         self.hidden_encoding = nn.Sequential(nn.Linear(hidden_input, hidden_input),
                                              nn.ReLU(),
                                              nn.Linear(hidden_input, hidden_input))
 
-        # 编码求和之后输入state、所有agent的hidden_state之和
         v_input = self.args.state_shape + self.args.rnn_hidden_dim
         self.v = nn.Sequential(nn.Linear(v_input, self.args.qtran_hidden_dim),
                                nn.ReLU(),
@@ -117,6 +118,7 @@ class QtranV(nn.Module):
                                nn.Linear(self.args.qtran_hidden_dim, 1))
 
     def forward(self, state, hidden):
+        # todo 这里每一个输入的是啥？
         episode_num, max_episode_len, n_agents, _ = hidden.shape
         state = state.reshape(episode_num * max_episode_len, -1)
         hidden_encoding = self.hidden_encoding(hidden.reshape(-1, self.args.rnn_hidden_dim))

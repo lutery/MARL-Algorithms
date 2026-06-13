@@ -16,15 +16,18 @@ class QtranBase:
         rnn_input_shape = self.obs_shape
 
         # 根据参数决定RNN的输入维度
-        if args.last_action:
-            rnn_input_shape += self.n_actions  # 当前agent的上一个动作的one_hot向量
-        if args.reuse_network:
+        if args.last_action: # 如果需要考虑上一个动作则RNN的输入维度加上动作的维度
+            rnn_input_shape += self.n_actions  #  
+        if args.reuse_network: # 是否参数共享，控制的是所有智能体是否共享同一套神经网络参数
+            # reuse_network=True 时，所有智能体共用一个 RNN 来做决策，通过在每个智能体的观测中拼接一个智能体 ID 的 one-hot 编码来让网络区分不同智能体。
+            # 所以这里输入的维度还多了一个智能体的数量，用来接受智能体id的one-hot编码
             rnn_input_shape += self.n_agents
 
-        # 神经网络
+        # 神经网络，预测动作
         self.eval_rnn = RNN(rnn_input_shape, args)  # 每个agent选动作的网络
         self.target_rnn = RNN(rnn_input_shape, args)
 
+        # 这里构建的应该是全局状态下预测的Q值
         self.eval_joint_q = QtranQBase(args)  # Joint action-value network
         self.target_joint_q = QtranQBase(args)
 
@@ -52,10 +55,11 @@ class QtranBase:
             else:
                 raise Exception("No model!")
 
-        # 让target_net和eval_net的网络参数相同
+        # 从源模型同步权重到目标模型
         self.target_rnn.load_state_dict(self.eval_rnn.state_dict())
         self.target_joint_q.load_state_dict(self.eval_joint_q.state_dict())
 
+        # 联合权重
         self.eval_parameters = list(self.eval_joint_q.parameters()) + \
                                list(self.v.parameters()) + \
                                list(self.eval_rnn.parameters())
@@ -95,11 +99,12 @@ class QtranBase:
         # 得到每个agent对应的Q和hidden_states，维度为(episode个数, max_episode_len， n_agents， n_actions/hidden_dim)
         individual_q_evals, individual_q_targets, hidden_evals, hidden_targets = self._get_individual_q(batch, max_episode_len)
 
-        # 得到当前时刻和下一时刻每个agent的局部最优动作及其one_hot表示
+        # 将无效动作的Q值设置为极小值
         individual_q_clone = individual_q_evals.clone()
         individual_q_clone[avail_u == 0.0] = - 999999
         individual_q_targets[avail_u_next == 0.0] = - 999999
 
+        # 根据预测的动作Q值分布，将最大Q值作为选择执行的动作，然后生成动作的one-hot编码
         opt_onehot_eval = torch.zeros(*individual_q_clone.shape)
         opt_action_eval = individual_q_clone.argmax(dim=3, keepdim=True)
         opt_onehot_eval = opt_onehot_eval.scatter(-1, opt_action_eval[:, :].cpu(), 1)
@@ -154,6 +159,12 @@ class QtranBase:
             self.target_joint_q.load_state_dict(self.eval_joint_q.state_dict())
 
     def _get_individual_q(self, batch, max_episode_len):
+        '''
+        batch: 训练的样本数据
+        max_episode_len： 训练数据采样最长的步数
+
+        这里主要是补齐每个时刻的动作Q值分布以及其隐藏层状态
+        '''
         episode_num = batch['o'].shape[0]
         q_evals, q_targets, hidden_evals, hidden_targets = [], [], [], []
         for transition_idx in range(max_episode_len):
@@ -164,7 +175,7 @@ class QtranBase:
                 self.eval_hidden = self.eval_hidden.cuda()
                 self.target_hidden = self.target_hidden.cuda()
 
-            # 要用第一条经验把target网络的hidden_state初始化好，直接用第二条经验传入target网络不对
+            # 要用第一条经验把target网络的hidden_state初始化好，这个大概如果不这么做这里的target_hidden是一个None值，毕竟之前没有使用过
             if transition_idx == 0:
                 _, self.target_hidden = self.target_rnn(inputs, self.eval_hidden)
             q_eval, self.eval_hidden = self.eval_rnn(inputs, self.eval_hidden)  # inputs维度为(40,96)，得到的q_eval维度为(40,n_actions)
@@ -186,17 +197,19 @@ class QtranBase:
         q_targets = torch.stack(q_targets, dim=1)
         hidden_evals = torch.stack(hidden_evals, dim=1)
         hidden_targets = torch.stack(hidden_targets, dim=1)
+        # 返回每一个时刻预测的动作Q值的分布，动作Q值分布目标网络的预测结果、每个时刻的隐藏层状态，目标网络每个时刻的隐藏层状态
         return q_evals, q_targets, hidden_evals, hidden_targets
 
     def _get_individual_inputs(self, batch, transition_idx):
-        # 取出所有episode上该transition_idx的经验，u_onehot要取出所有，因为要用到上一条
+        # 根据步数编号提取对应的样本数据
+        # 返回的是上一个动作和当前时刻获取obs的组合
         obs, obs_next, u_onehot = batch['o'][:, transition_idx], \
                                   batch['o_next'][:, transition_idx], batch['u_onehot'][:]
         episode_num = obs.shape[0]
         inputs, inputs_next = [], []
         inputs.append(obs)
         inputs_next.append(obs_next)
-        # 给obs添加上一个动作、agent编号
+        # 给obs添加上一个动作、agent编号，看起来和obs组合的是上一个动作，而不是当前的动作
         if self.args.last_action:
             if transition_idx == 0:  # 如果是第一条经验，就让前一个动作为0向量
                 inputs.append(torch.zeros_like(u_onehot[:, transition_idx]))
@@ -216,6 +229,12 @@ class QtranBase:
         return inputs, inputs_next
 
     def get_qtran(self, batch, hidden_evals, hidden_targets, local_opt_actions, hat=False):
+        '''
+        batch: 采样的训练数据
+        hidden_evals: 待训练网络的隐藏层状态
+        hidden_targets: 目标网络的隐藏层状态
+        local_opt_actions： 目标网络预测Q值后选择最大Q值所生成的动作分布
+        '''
         episode_num, max_episode_len, _, _ = hidden_targets.shape
         states = batch['s'][:, :max_episode_len]
         states_next = batch['s_next'][:, :max_episode_len]
@@ -227,8 +246,7 @@ class QtranBase:
             hidden_evals = hidden_evals.cuda()
             hidden_targets = hidden_targets.cuda()
             local_opt_actions = local_opt_actions.cuda()
-        if hat:
-            # 神经网络输出的q_eval、q_target、v的维度为(episode_num * max_episode_len, 1)
+        if hat: # todo 这个是干啥的？
             q_evals = self.eval_joint_q(states, hidden_evals, local_opt_actions)
             q_targets = None
             v = None

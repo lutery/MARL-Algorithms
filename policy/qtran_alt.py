@@ -14,9 +14,9 @@ class QtranAlt:
         rnn_input_shape = self.obs_shape
 
         # 根据参数决定RNN的输入维度
-        if args.last_action:
+        if args.last_action: # 同 QtranBase
             rnn_input_shape += self.n_actions  # 当前agent的上一个动作的one_hot向量
-        if args.reuse_network:
+        if args.reuse_network: # 同 QtranBase
             rnn_input_shape += self.n_agents
         self.args = args
         # 神经网络

@@ -82,6 +82,7 @@ class Agents:
                 maven_z = maven_z.cuda()
             q_value, self.policy.eval_hidden[:, agent_num, :] = self.policy.eval_rnn(inputs, hidden_state, maven_z)
         else:
+            # 以下的动作Q值分布预测对于所有的策略网络都适用
             # 将输入和隐藏层的状态输入后到RNN中，然后获取动作Q值的分布以及最新的隐藏层状态，存储到eval_hidden中
             q_value, self.policy.eval_hidden[:, agent_num, :] = self.policy.eval_rnn(inputs, hidden_state)
 
@@ -141,7 +142,7 @@ class Agents:
         max_episode_len = self._get_max_episode_len(batch) # 获取本次训练的batch中最长的episode的长度
         for key in batch.keys():
             if key != 'z':
-                batch[key] = batch[key][:, :max_episode_len] # 只用到最长的episode的长度的数据，避免填充的数据对训练的影响，看来是因为有循环神经网络的关系
+                batch[key] = batch[key][:, :max_episode_len] # 只用到最长的episode的长度的数据，减少计算量
         self.policy.learn(batch, max_episode_len, train_step, epsilon)
         if train_step > 0 and train_step % self.args.save_cycle == 0:
             self.policy.save_model(train_step) # 每隔save_cycle步保存一次模型

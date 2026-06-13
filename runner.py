@@ -73,13 +73,14 @@ class Runner:
         self.plt(num)
 
     def evaluate(self):
-        win_number = 0
+        win_number = 0 # 记录赢的局数
         episode_rewards = 0
         for epoch in range(self.args.evaluate_epoch):
-            _, episode_reward, win_tag, _ = self.rolloutWorker.generate_episode(epoch, evaluate=True)
+            _, episode_reward, win_tag, _ = self.rolloutWorker.generate_episode(epoch, evaluate=True) # 进行验证
             episode_rewards += episode_reward
             if win_tag:
                 win_number += 1
+        # 返回胜率以及平均奖励回报
         return win_number / self.args.evaluate_epoch, episode_rewards / self.args.evaluate_epoch
 
     def plt(self, num):
