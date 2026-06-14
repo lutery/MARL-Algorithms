@@ -118,7 +118,7 @@ class QtranBase:
         # joint_q、v的维度为(episode个数, max_episode_len, 1), 而且joint_q在后面的l_nopt还要用到
         joint_q_evals, joint_q_targets, v = self.get_qtran(batch, hidden_evals, hidden_targets, opt_onehot_target)
 
-        # loss
+        # loss 这里的损失就是常规的预测q值和真实Q值时间的差异
         y_dqn = r.squeeze(-1) + self.args.gamma * joint_q_targets * (1 - terminated.squeeze(-1))
         td_error = joint_q_evals - y_dqn.detach()
         l_td = ((td_error * mask) ** 2).sum() / mask.sum()
@@ -129,31 +129,34 @@ class QtranBase:
         # 这里要使用individual_q_clone，它把不能执行的动作Q值改变了，使用individual_q_evals可能会使用不能执行的动作的Q值
         q_sum_opt = individual_q_clone.max(dim=-1)[0].sum(dim=-1)  # (episode个数, max_episode_len)
 
-        # 重新得到joint_q_hat_opt，它和joint_q_evals的区别是前者输入的动作是局部最优动作，后者输入的动作是执行的动作
-        # (episode个数, max_episode_len)
-        joint_q_hat_opt, _, _ = self.get_qtran(batch, hidden_evals, hidden_targets, opt_onehot_eval, hat=True)
-        opt_error = q_sum_opt - joint_q_hat_opt.detach() + v  # 计算l_opt时需要将joint_q_hat_opt固定
-        l_opt = ((opt_error * mask) ** 2).sum() / mask.sum()
+        # 每个智能体预测的最大动作Q值取出来，然后再求每个智能体在当前时刻的Q值和模拟整体的Q值
+        # 加上根据状态和隐藏状态预测的状态值
+        # 理论熵应该等于结合了全局状态、每个智能体的隐藏状态、执行最优动作的预测Q值
+        joint_q_hat_opt, _, _ = self.get_qtran(batch, hidden_evals, hidden_targets, opt_onehot_eval, hat=True) # 这里返回的joint_q_hat_opt，表示每个个体选择最优Q值的动作下返回的整体预测的Q值
+        opt_error = q_sum_opt - joint_q_hat_opt.detach() + v  # 联合最优 ≥ 个体最优之和 ，个体最好但是比不过全局最好
+        l_opt = ((opt_error * mask) ** 2).sum() / mask.sum() 
         # ---------------------------------------------L_opt------------------------------------------------------------
 
         # ---------------------------------------------L_nopt-----------------------------------------------------------
         # 每个agent的执行动作的Q值,(episode个数, max_episode_len, n_agents, 1)
-        q_individual = torch.gather(individual_q_evals, dim=-1, index=u).squeeze(-1)
-        q_sum_nopt = q_individual.sum(dim=-1)  # (episode个数, max_episode_len)
+        q_individual = torch.gather(individual_q_evals, dim=-1, index=u).squeeze(-1) # 获取真实执行动作的下预测的Q值
+        q_sum_nopt = q_individual.sum(dim=-1)  # (episode个数, max_episode_len) 模拟全局q值
 
-        nopt_error = q_sum_nopt - joint_q_evals.detach() + v  # 计算l_nopt时需要将joint_q_evals固定
+        # 同上，但是这里得到的是真实i执行的动作下，全局和个体之间的Q值要相近
+        nopt_error = q_sum_nopt - joint_q_evals.detach() + v  #  联合执行 ≤ 个体执行之和，因为个体肯定是考虑自己是最好的，但是放在全局不一定是最好的
         nopt_error = nopt_error.clamp(max=0)
         l_nopt = ((nopt_error * mask) ** 2).sum() / mask.sum()
         # ---------------------------------------------L_nopt-----------------------------------------------------------
 
         # print('l_td is {}, l_opt is {}, l_nopt is {}'.format(l_td, l_opt, l_nopt))
-        loss = l_td + self.args.lambda_opt * l_opt + self.args.lambda_nopt * l_nopt
+        loss = l_td + self.args.lambda_opt * l_opt + self.args.lambda_nopt * l_nopt # 组合以上的所有损失
         # loss = l_td + self.args.lambda_opt * l_opt
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.eval_parameters, self.args.grad_norm_clip)
         self.optimizer.step()
 
+        # 同步权重到目标
         if train_step > 0 and train_step % self.args.target_update_cycle == 0:
             self.target_rnn.load_state_dict(self.eval_rnn.state_dict())
             self.target_joint_q.load_state_dict(self.eval_joint_q.state_dict())
@@ -246,7 +249,7 @@ class QtranBase:
             hidden_evals = hidden_evals.cuda()
             hidden_targets = hidden_targets.cuda()
             local_opt_actions = local_opt_actions.cuda()
-        if hat: # todo 这个是干啥的？
+        if hat: # 如果传入的local_opt_actions动作是 target动作，则为False，如果传入的动作是当前最大Q值动作则为True
             q_evals = self.eval_joint_q(states, hidden_evals, local_opt_actions)
             q_targets = None
             v = None
@@ -256,12 +259,13 @@ class QtranBase:
         else:
             q_evals = self.eval_joint_q(states, hidden_evals, u_onehot) # 获取当前时刻全局状态下的Q值大小
             q_targets = self.target_joint_q(states_next, hidden_targets, local_opt_actions) # 获取下一个时刻全局状态下的Q值大小
-            v = self.v(states, hidden_evals)
+            v = self.v(states, hidden_evals) # 根据当前时刻的全局状态和隐藏层状态预测v值，代表当前状态下的"允许偏差"
             # 把q_eval、q_target、v维度变回(episode_num, max_episode_len)
             q_evals = q_evals.view(episode_num, -1, 1).squeeze(-1)
             q_targets = q_targets.view(episode_num, -1, 1).squeeze(-1)
             v = v.view(episode_num, -1, 1).squeeze(-1)
 
+        # 返回当前时刻全局状态下的Q值大小、下一个时刻全局状态下的Q值大小、根据当前时刻的全局状态和隐藏层状态预测v值
         return q_evals, q_targets, v
 
     def init_hidden(self, episode_num):

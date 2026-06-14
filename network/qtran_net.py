@@ -112,11 +112,13 @@ class QtranV(nn.Module):
         self.args = args
 
         hidden_input = self.args.rnn_hidden_dim
+        #  # ===== 编码器：编码每个智能体的 hidden state =====
         self.hidden_encoding = nn.Sequential(nn.Linear(hidden_input, hidden_input),
                                              nn.ReLU(),
                                              nn.Linear(hidden_input, hidden_input))
 
         v_input = self.args.state_shape + self.args.rnn_hidden_dim
+        # ===== V 网络：全局 state + 所有 hidden 的编码和 → 标量 V =====
         self.v = nn.Sequential(nn.Linear(v_input, self.args.qtran_hidden_dim),
                                nn.ReLU(),
                                nn.Linear(self.args.qtran_hidden_dim, self.args.qtran_hidden_dim),
@@ -130,8 +132,11 @@ class QtranV(nn.Module):
         '''
         episode_num, max_episode_len, n_agents, _ = hidden.shape
         state = state.reshape(episode_num * max_episode_len, -1)
+        # # Step 1: 编码每个智能体的 hidden
         hidden_encoding = self.hidden_encoding(hidden.reshape(-1, self.args.rnn_hidden_dim))
+        # # Step 2: 求和所有智能体的编码，得到一个融合了所有智能体信息的向量
         hidden_encoding = hidden_encoding.reshape(episode_num * max_episode_len, n_agents, -1).sum(dim=-2)
+        # Step 3: 拼接全局 state 后过 MLP 输出标量
         inputs = torch.cat([state, hidden_encoding], dim=-1)
         v = self.v(inputs)
         return v
