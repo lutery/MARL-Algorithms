@@ -141,10 +141,11 @@ class QtranBase:
         # 每个agent的执行动作的Q值,(episode个数, max_episode_len, n_agents, 1)
         q_individual = torch.gather(individual_q_evals, dim=-1, index=u).squeeze(-1) # 获取真实执行动作的下预测的Q值
         q_sum_nopt = q_individual.sum(dim=-1)  # (episode个数, max_episode_len) 模拟全局q值
-
+        # 约束①:  Q_joint(a*)  ≥  Σ Q_i(a*_i)  -  V(s)      ← 联合 Q 可以比个体和低 V(s)
+        # 约束②:  Q_joint(exec) ≤  Σ Q_i(exec_i) + V(s)      ← 联合 Q 可以比个体和高 V(s)
         # 同上，但是这里得到的是真实i执行的动作下，全局和个体之间的Q值要相近
         nopt_error = q_sum_nopt - joint_q_evals.detach() + v  #  联合执行 ≤ 个体执行之和，因为个体肯定是考虑自己是最好的，但是放在全局不一定是最好的
-        nopt_error = nopt_error.clamp(max=0)
+        nopt_error = nopt_error.clamp(max=0) # 根据上面的公式，正直是正常的，如果出现了负值就有问题，需要通过MSE拉近两者的距离
         l_nopt = ((nopt_error * mask) ** 2).sum() / mask.sum()
         # ---------------------------------------------L_nopt-----------------------------------------------------------
 
