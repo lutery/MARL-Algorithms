@@ -70,10 +70,12 @@ class QtranQBase(nn.Module):
         self.args = args
         # 这里接收的输入是RNN特征提取后的
         ae_input = self.args.rnn_hidden_dim + self.args.n_actions
+        # 编码器：用于把每个智能体的hidden_state和动作进行编码，输出的维度也是ae_input，后续会将所有智能体的编码结果进行求和，所以输出维度要和输入维度一样
         self.hidden_action_encoding = nn.Sequential(nn.Linear(ae_input, ae_input),
                                              nn.ReLU(),
                                              nn.Linear(ae_input, ae_input))
 
+        # ===== Q 网络：全局 state + 所有智能体的编码 → 标量 Q =====
         q_input = self.args.state_shape + self.args.n_actions + self.args.rnn_hidden_dim
         self.q = nn.Sequential(nn.Linear(q_input, self.args.qtran_hidden_dim),
                                nn.ReLU(),
@@ -84,20 +86,24 @@ class QtranQBase(nn.Module):
     def forward(self, state, hidden_states, actions):  # (episode_num, max_episode_len, n_agents, n_actions)
         '''
         state: 全局的obs观察
-        hidden_states: 循环神经网络每一步的状态
-        actions: 采集动作时的one-hot编码
+        hidden_states: 循环神经网络每一步的状态 # 形状：(E, T, n_agents, 64 + 12) = (E, T, n_agents, 76)
+        actions: 采集动作时的one-hot编码，这里为什么还要进一步输入动作，是因为之前的动作是单个智能体局与环境的交互动作，而这里的动作是所有智能体的动作
+        所以输入再次输入动作在评估整体的价值情况时是必要的
         '''
         # todo 这里每一个输入的是啥？
         episode_num, max_episode_len, n_agents, _ = actions.shape
         hidden_actions = torch.cat([hidden_states, actions], dim=-1) # 将隐藏状态和动作合并，RNN的隐藏状态输入的是状态、动作、agent id
         hidden_actions = hidden_actions.reshape(-1, self.args.rnn_hidden_dim + self.args.n_actions)
+        # 它把 (hidden, action) 的原始拼接空间映射到一个"更适合求和"的编码空间。
+        # 为什么需要编码？因为直接把所有智能体的 (hidden, action) 求和太粗糙了——编码器让网络自己学会"用什么样的方式对每个智能体编码，使得求和后能最好地预测联合 Q 值"。
         hidden_actions_encoding = self.hidden_action_encoding(hidden_actions) # 对隐藏状态+动作的特征进一步提取特征
         hidden_actions_encoding = hidden_actions_encoding.reshape(episode_num * max_episode_len, n_agents, -1)  # 变回n_agents维度用于求和
-        hidden_actions_encoding = hidden_actions_encoding.sum(dim=-2)
+        hidden_actions_encoding = hidden_actions_encoding.sum(dim=-2) # 这里相当于maxpool\\sumpool等操作，求和之后就将每一步所有智能体的特征融合在一起了，其余维度保持不变
+        # 把所有智能体的信息"融合"成一个向量。用求和而非拼接，保证了排列不变性（智能体的顺序不影响结果）。
 
         inputs = torch.cat([state.reshape(episode_num * max_episode_len, -1), hidden_actions_encoding], dim=-1)
-        q = self.q(inputs)
-        return q
+        q = self.q(inputs) # 最后预测联合Q值，输出的维度是(episode_num * max_episode_len, 1)，每一行对应一个transition的联合Q值
+        return q # 这里就是每一个transition的联合Q值
 
 
 class QtranV(nn.Module):
@@ -118,7 +124,10 @@ class QtranV(nn.Module):
                                nn.Linear(self.args.qtran_hidden_dim, 1))
 
     def forward(self, state, hidden):
-        # todo 这里每一个输入的是啥？
+        '''
+        state: 全局的obs观察
+        hidden: 循环神经网络每一步的状态 # 形状：(E, T, n_agents, 64 + 12) = (E, T, n_agents, 76)
+        '''
         episode_num, max_episode_len, n_agents, _ = hidden.shape
         state = state.reshape(episode_num * max_episode_len, -1)
         hidden_encoding = self.hidden_encoding(hidden.reshape(-1, self.args.rnn_hidden_dim))

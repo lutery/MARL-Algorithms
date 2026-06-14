@@ -254,8 +254,8 @@ class QtranBase:
             # 把q_eval维度变回(episode_num, max_episode_len)
             q_evals = q_evals.view(episode_num, -1, 1).squeeze(-1)
         else:
-            q_evals = self.eval_joint_q(states, hidden_evals, u_onehot)
-            q_targets = self.target_joint_q(states_next, hidden_targets, local_opt_actions)
+            q_evals = self.eval_joint_q(states, hidden_evals, u_onehot) # 获取当前时刻全局状态下的Q值大小
+            q_targets = self.target_joint_q(states_next, hidden_targets, local_opt_actions) # 获取下一个时刻全局状态下的Q值大小
             v = self.v(states, hidden_evals)
             # 把q_eval、q_target、v维度变回(episode_num, max_episode_len)
             q_evals = q_evals.view(episode_num, -1, 1).squeeze(-1)
