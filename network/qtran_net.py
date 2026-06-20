@@ -25,10 +25,15 @@ class QtranQAlt(nn.Module):
                                nn.ReLU(),
                                nn.Linear(self.args.qtran_hidden_dim, self.args.qtran_hidden_dim),
                                nn.ReLU(),
-                               nn.Linear(self.args.qtran_hidden_dim, self.args.n_actions))
+                               nn.Linear(self.args.qtran_hidden_dim, self.args.n_actions)) # 输出的动作Q值的分布
 
     # 因为所有时刻所有agent的hidden_states在之前已经计算好了，所以联合Q值可以一次计算所有transition的，不需要一条一条计算。
     def forward(self, state, hidden_states, actions):  # (episode_num, max_episode_len, n_agents, n_actions)
+        '''
+        state: 全局状态（包含agent id）
+        hidden_states: 每一个时刻的隐藏层状态
+        actions: 每一个时刻对应下选择的动作one-hot编码
+        '''
         # state的shape为(episode_num, max_episode_len, n_agents, state_shape+n_agents)，包括了当前agent的编号
         episode_num, max_episode_len, n_agents, n_actions = actions.shape
 
@@ -48,7 +53,10 @@ class QtranQAlt(nn.Module):
         # 先让最后一维包含所有agent的动作
         action_encoding = action_encoding.reshape(episode_num, max_episode_len, 1, n_agents * n_actions)
         action_encoding = action_encoding.repeat(1, 1, n_agents, 1)  # 此时每个agent都有了所有agent的动作
-        # 把每个agent自己的动作置0
+        # 构造"排除自己"的 mask 把每个agent自己的动作置0
+        # 以下就是让每个Agent能够看到其他Agent的动作（排除掉自己的动作）
+        # 通过这种方式后对当前Agent执行的动作情况进行打分
+        # todo 后续看这里的每个的shape
         action_mask = (1 - torch.eye(n_agents))  # th.eye（）生成一个二维对角矩阵
         action_mask = action_mask.view(-1, 1).repeat(1, n_actions).view(n_agents, -1)
         if self.args.cuda:

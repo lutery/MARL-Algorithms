@@ -98,6 +98,7 @@ class QtranAlt:
         individual_q_clone[avail_u == 0.0] = - 999999
         individual_q_targets[avail_u_next == 0.0] = - 999999
 
+        # 根据最大的q值选择动作，然后转换为one-hot编码
         opt_onehot_eval = torch.zeros(*individual_q_clone.shape)
         opt_action_eval = individual_q_clone.argmax(dim=3, keepdim=True)
         opt_onehot_eval = opt_onehot_eval.scatter(-1, opt_action_eval[:, :].cpu(), 1)
@@ -114,12 +115,13 @@ class QtranAlt:
         joint_q_evals, joint_q_targets, v = self.get_qtran(batch, opt_onehot_target, hidden_evals, hidden_targets)
 
         # 取出当前agent动作对应的joint_q_chosen以及它的局部最优动作对应的joint_q
-        joint_q_chosen = torch.gather(joint_q_evals, dim=-1, index=u).squeeze(-1)  # (episode个数, max_episode_len, n_agents)
-        joint_q_opt = torch.gather(joint_q_targets, dim=-1, index=opt_action_target).squeeze(-1)
+        joint_q_chosen = torch.gather(joint_q_evals, dim=-1, index=u).squeeze(-1)  # (episode个数, max_episode_len, n_agents) 实际执行的动作Q值
+        joint_q_opt = torch.gather(joint_q_targets, dim=-1, index=opt_action_target).squeeze(-1) # 预测局部Q值选择全局动作的Q值
+        # 这里之所以选择用个体认为最该选择的动作，是为了避免预测过大，必须要符合全体的利益，后续使得两者能够接近
 
         # loss
         y_dqn = r.repeat(1, 1, self.n_agents) + self.args.gamma * joint_q_opt * (1 - terminated.repeat(1, 1, self.n_agents))
-        td_error = joint_q_chosen - y_dqn.detach()
+        td_error = joint_q_chosen - y_dqn.detach() # 实际执行动作的Q值要等于计算得到的Q值，这样预测才会越来越准确
         l_td = ((td_error * mask) ** 2).sum() / mask.sum()
         # ---------------------------------------------L_td-------------------------------------------------------------
 
@@ -127,16 +129,17 @@ class QtranAlt:
 
         # 将局部最优动作的Q值相加  (episode个数,max_episode_len)
         # 这里要使用individual_q_clone，它把不能执行的动作Q值改变了，使用individual_q_evals可能会使用不能执行的动作的Q值
+        # 所有独立个体的Agent选择最大Q值的动作后，然后再合并所有Agent的值
         q_sum_opt = individual_q_clone.max(dim=-1)[0].sum(dim=-1)
 
         # 重新得到joint_q_opt_eval，它和joint_q_evals的区别是前者输入的动作是当前局部最优动作，后者输入的动作是当前执行的动作
-        joint_q_opt_evals, _, _ = self.get_qtran(batch, opt_onehot_eval, hidden_evals, hidden_targets, hat=True)
+        joint_q_opt_evals, _, _ = self.get_qtran(batch, opt_onehot_eval, hidden_evals, hidden_targets, hat=True) # 这里仅仅计算当前时刻的全局状态下动作Q值的分布
         joint_q_opt_evals = torch.gather(joint_q_opt_evals, dim=-1, index=opt_action_eval).squeeze(-1)  # (episode个数, max_episode_len， n_agents)
 
         # 因为QTRAN-alt要对每个agent都计算l_opt，所以要把q_sum_opt和v再增加一个agent维
         q_sum_opt = q_sum_opt.unsqueeze(-1).expand(-1, -1, self.n_agents)
         v = v.unsqueeze(-1).expand(-1, -1, self.n_agents)
-        opt_error = q_sum_opt - joint_q_opt_evals.detach() + v  # 计算l_opt时需要将joint_q_opt_evals固定
+        opt_error = q_sum_opt - joint_q_opt_evals.detach() + v  # todo 还是得多揣摩一下这里的detach 这里看qtran_base那边的解释
         l_opt = ((opt_error * mask) ** 2).sum() / mask.sum()
 
         # ---------------------------------------------L_opt------------------------------------------------------------
@@ -150,20 +153,20 @@ class QtranAlt:
         q_all_chosen = torch.gather(individual_q_evals, dim=-1, index=u)
         #   2. 把q_all最后一个维度上当前agent的Q值变成所有agent的Q值，(episode个数, max_episode_len, n_agents, n_agents)
         q_all_chosen = q_all_chosen.view((episode_num, max_episode_len, 1, -1)).repeat(1, 1, self.n_agents, 1)
-        q_mask = (1 - torch.eye(self.n_agents)).unsqueeze(0).unsqueeze(0)
+        q_mask = (1 - torch.eye(self.n_agents)).unsqueeze(0).unsqueeze(0) # 又是制作了一个和当前agent无关的矩阵
         if self.args.cuda:
             q_mask = q_mask.cuda()
         q_other_chosen = q_all_chosen * q_mask  # 把每个agent自己的Q值置为0，从而才能相加得到其他agent的Q值之和
         #   3. 求和，同时由于对于当前agent的每个动作，都要和q_other_sum相加，所以把q_other_sum扩展出n_actions维度
-        q_other_sum = q_other_chosen.sum(dim=-1, keepdim=True).repeat(1, 1, 1, self.n_actions)
+        q_other_sum = q_other_chosen.sum(dim=-1, keepdim=True).repeat(1, 1, 1, self.n_actions) # 得到每个Agent对应无关自己的动作Q值的和
 
         # 当前agent的每个动作的Q和其他agent执行动作的Q相加，得到D中的第一项
         q_sum_nopt = individual_q_evals + q_other_sum
 
         # 因为joint_q_evals的维度是(episode个数,max_episode_len,n_agents,n_actions)，所以要对v扩展出一个n_actions维度
         v = v.unsqueeze(-1).expand(-1, -1, -1, self.n_actions)
-        d = q_sum_nopt - joint_q_evals.detach() + v  # 计算l_nopt时需要将qtran_q_evals固定
-        d = d.min(dim=-1)[0]
+        d = q_sum_nopt - joint_q_evals.detach() + v  # 计算l_nopt时需要将qtran_q_evals固定 具体看md文档 
+        d = d.min(dim=-1)[0] # todo 后续移植时要理清关系
         l_nopt = ((d * mask) ** 2).sum() / mask.sum()
         # ---------------------------------------------L_nopt-----------------------------------------------------------
 
@@ -180,6 +183,10 @@ class QtranAlt:
             self.target_joint_q.load_state_dict(self.eval_joint_q.state_dict())
 
     def _get_individual_q(self, batch, max_episode_len):
+        '''
+        param batch: 训练的数据
+        param max_episode_len: 训练数据是一个连续数据样本，这里是指连续数据样本的长度
+        '''
         episode_num = batch['o'].shape[0]
         q_evals, q_targets, hidden_evals, hidden_targets = [], [], [], []
         for transition_idx in range(max_episode_len):
@@ -238,13 +245,19 @@ class QtranAlt:
         return inputs, inputs_next
 
     def get_qtran(self, batch, local_opt_actions, hidden_evals, hidden_targets=None, hat=False):
+        '''
+        batch: 训练样本数据
+        local_opt_actions: 每个时刻下目标状态下预测的动作
+        hidden_evals: 整个训练样本中，根据Agent局部obs下，预测的动作Q值分布时，每一个时刻的隐藏状态
+        hidden_targets: 整个训练样本中，根据Agent局部next obs下，预测动作的Q值分布，每一个时刻的隐藏状态
+        '''
         episode_num, max_episode_len, _, _ = hidden_evals.shape
-        s = batch['s'][:, :max_episode_len]
-        s_next = batch['s_next'][:, :max_episode_len]
-        u_onehot = batch['u_onehot'][:, :max_episode_len]
+        s = batch['s'][:, :max_episode_len] # 全局状态
+        s_next = batch['s_next'][:, :max_episode_len] # 全局下一个状态
+        u_onehot = batch['u_onehot'][:, :max_episode_len] # 每一个时刻下选择的动作one-hot编码
         v_state = s.clone()
 
-        # s和s_next没有n_agents维度，每个agent的joint_q网络都需要, 所以要把s转化成四维
+        # s和s_next没有n_agents维度，每个agent的joint_q网络都需要, 所以要把s转化成四维，看来这里是为每一个agnet复制一份全局state
         s = s.unsqueeze(-2).expand(-1, -1, self.n_agents, -1)
         s_next = s_next.unsqueeze(-2).expand(-1, -1, self.n_agents, -1)
         # 添加agent编号对应的one-hot向量
@@ -273,15 +286,17 @@ class QtranAlt:
             # 把q_eval维度变回(episode_num, max_episode_len, n_agents, n_actions)
             q_evals = q_evals.view(episode_num, max_episode_len, -1, self.n_actions)
         else:
+            # 根据全局状态得到每个智能体每个动作分布的Q值分布
             q_evals = self.eval_joint_q(s_eval, hidden_evals, u_onehot)
             q_targets = self.target_joint_q(s_target, hidden_targets, local_opt_actions)
-            v = self.v(v_state, hidden_evals)
+            v = self.v(v_state, hidden_evals) # 这里得到的是状态的价值
             # 把q_eval、q_target维度变回(episode_num, max_episode_len, n_agents, n_actions)
             q_evals = q_evals.view(episode_num, max_episode_len, -1, self.n_actions)
             q_targets = q_targets.view(episode_num, max_episode_len, -1, self.n_actions)
             # 把v维度变回(episode_num, max_episode_len)
             v = v.view(episode_num, -1)
 
+        # 返回每个智能体根据全局状态下预测的动作分布，下一个全局状态的动作Q值的分布，每个时刻的状态价值
         return q_evals, q_targets, v
 
     def init_hidden(self, episode_num):
